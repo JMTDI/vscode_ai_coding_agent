@@ -9,6 +9,18 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider('puterCodingAgent.chatView', chatProvider)
   );
 
+  // Sign-in command: Opens Puter auth in external browser
+  const signInCommand = vscode.commands.registerCommand('puter.signIn', async () => {
+    const authUrl = 'https://puter.com/?embedded_in_popup=true&request_auth=true'; // Matches the stuck URL; Puter will handle the flow
+    const success = await vscode.env.openExternal(vscode.Uri.parse(authUrl));
+    if (success) {
+      vscode.window.showInformationMessage('Puter auth opened in browser. Sign in (create free account if needed), close the tab, then reload VS Code window (Ctrl+R) or retry your query.');
+    } else {
+      vscode.window.showErrorMessage('Failed to open browser. Manually visit: ' + authUrl);
+    }
+  });
+  context.subscriptions.push(signInCommand);
+
   // Create hidden webview for AI bridge
   aiBridgeWebview = vscode.window.createWebviewPanel(
     'puterAIBridge',
@@ -23,14 +35,40 @@ export function activate(context: vscode.ExtensionContext) {
   aiBridgeWebview.webview.html = getAIBridgeHtml(aiBridgeWebview.webview, context.extensionUri);
   context.subscriptions.push(aiBridgeWebview);
 
+  // Initial auth check and prompt
+  setTimeout(async () => {
+    const isSignedIn = await checkSignedInStatus();
+    if (!isSignedIn) {
+      vscode.window.showWarningMessage(
+        'Puter Agent: Sign in required for AI. This opens your browser externally.',
+        'Sign In Now'
+      ).then(selection => {
+        if (selection === 'Sign In Now') {
+          vscode.commands.executeCommand('puter.signIn');
+        }
+      });
+    }
+  }, 1000);
+
   // Inline completion provider
   const completionProvider = vscode.languages.registerInlineCompletionItemProvider('*', {
     async provideInlineCompletionItems(document: vscode.TextDocument, position: vscode.Position, context: vscode.InlineCompletionContext, token: vscode.CancellationToken) {
+      const isSignedIn = await checkSignedInStatus();
+      if (!isSignedIn) {
+        vscode.window.showWarningMessage('Puter Agent: Sign in via command palette (Ctrl+Shift+P > Puter: Sign In).', 'Open Sign In').then(sel => {
+          if (sel === 'Open Sign In') vscode.commands.executeCommand('puter.signIn');
+        });
+        return new vscode.InlineCompletionList([]);
+      }
       const prefix = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
-      const prompt = `Complete the following code:\n${prefix}\n`; // Simple prompt; customize as needed
-      const response = await callAIViaBridge(prompt);
-      if (response) {
-        return new vscode.InlineCompletionList([new vscode.InlineCompletionItem(response)]);
+      const prompt = `Complete the following code:\n${prefix}\n`;
+      try {
+        const response = await callAIViaBridge(prompt);
+        if (response) {
+          return new vscode.InlineCompletionList([new vscode.InlineCompletionItem(response)]);
+        }
+      } catch (error) {
+        vscode.window.showErrorMessage(`AI Error: ${error}`);
       }
       return new vscode.InlineCompletionList([]);
     }
@@ -42,6 +80,24 @@ export function deactivate() {
   if (aiBridgeWebview) {
     aiBridgeWebview.dispose();
   }
+}
+
+// Check signed-in status via bridge
+async function checkSignedInStatus(): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!aiBridgeWebview) {
+      resolve(false);
+      return;
+    }
+    const id = Math.random().toString(36).substring(7);
+    const listener = aiBridgeWebview.webview.onDidReceiveMessage((message) => {
+      if (message.id === id) {
+        listener.dispose();
+        resolve(!!message.signedIn);
+      }
+    });
+    aiBridgeWebview.webview.postMessage({ command: 'checkAuth', id });
+  });
 }
 
 // Function to call AI via the hidden webview bridge
@@ -83,7 +139,7 @@ function getAIBridgeHtml(webview: vscode.Webview, extensionUri: vscode.Uri) {
     </html>`;
 }
 
-// Chat view remains similar
+// Chat view
 class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -109,6 +165,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         } else {
           vscode.window.showErrorMessage('No active editor to insert code.');
         }
+      } else if (message.command === 'signInPrompt') {
+        vscode.commands.executeCommand('puter.signIn');
       }
     });
   }
@@ -116,7 +174,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
   private _getHtmlForWebview(webview: vscode.Webview) {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'main.js'));
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'styles.css'));
-    const markedUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', 'marked', 'marked.min.js')); // Add marked dep
+    const markedUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', 'marked', 'marked.min.js'));
 
     return `<!DOCTYPE html>
       <html lang="en">
