@@ -27,20 +27,22 @@ sendButton.addEventListener('click', async () => {
   addMessage(query, true);
   input.value = '';
 
-  addMessage('Thinking...', false); // Loading indicator
+  // Quick auth check before AI call
+  if (!puter.auth.isSignedIn()) {
+    addMessage('Not signed in. Opening browser for auth...', false);
+    vscode.postMessage({ command: 'signInPrompt' });
+    return;
+  }
+
+  addMessage('Thinking...', false);
   const loadingMsg = messagesDiv.lastChild;
 
   try {
-    if (!puter.auth.isSignedIn()) {
-      loadingMsg.innerText = 'Authenticating...';
-      await puter.auth.signIn(); // Opens browser for sign-in
-      loadingMsg.innerText = 'Thinking...';
-    }
     const response = await puter.ai.chat(query, { model: 'claude-opus-4-5' });
     loadingMsg.remove();
-    addMessage(response, false, true); // Render as markdown
+    addMessage(response, false, true);
   } catch (error) {
-    loadingMsg.innerText = 'Error: ' + error.message;
+    loadingMsg.innerText = 'Error: ' + error.message + '. If auth-related, sign in via command palette.';
   }
 });
 
