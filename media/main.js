@@ -3,10 +3,14 @@ const messagesDiv = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendButton = document.getElementById('send');
 
-function addMessage(text, isUser = false) {
+function addMessage(text, isUser = false, isMarkdown = false) {
   const msgDiv = document.createElement('div');
   msgDiv.className = isUser ? 'message user' : 'message ai';
-  msgDiv.innerText = text;
+  if (isMarkdown) {
+    msgDiv.innerHTML = marked.parse(text);
+  } else {
+    msgDiv.innerText = text;
+  }
   if (!isUser) {
     const insertBtn = document.createElement('button');
     insertBtn.innerText = 'Insert Code';
@@ -23,11 +27,15 @@ sendButton.addEventListener('click', async () => {
   addMessage(query, true);
   input.value = '';
 
+  addMessage('Thinking...', false); // Loading indicator
+  const loadingMsg = messagesDiv.lastChild;
+
   try {
     const response = await puter.ai.chat(query, { model: 'claude-opus-4-5' });
-    addMessage(response);
+    loadingMsg.remove();
+    addMessage(response, false, true); // Render as markdown
   } catch (error) {
-    addMessage('Error: ' + error.message);
+    loadingMsg.innerText = 'Error: ' + error.message;
   }
 });
 
