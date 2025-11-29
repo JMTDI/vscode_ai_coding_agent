@@ -4,8 +4,7 @@ const messagesDiv = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendButton = document.getElementById('send');
 
-let pendingQuery = null;          // stores the query while we wait for auth
-let retryAfterAuth = false;       // tells us to retry when popup closes
+let isWaitingForAuth = false;
 
 function addMessage(text, isUser = false, isMarkdown = false) {
   const div = document.createElement('div');
@@ -23,47 +22,50 @@ function addMessage(text, isUser = false, isMarkdown = false) {
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
-// Main send handler
-async function trySend() {
+async function sendMessage() {
+  if (isWaitingForAuth) return;   // prevent spam
+
   const query = input.value.trim();
   if (!query) return;
+
   addMessage(query, true);
   input.value = '';
-  pendingQuery = query;
 
+  // If already signed in → normal flow
   if (puter.auth.isSignedIn()) {
-    await doAiCall(query);
-  } else {
+    addMessage('Thinking…', false);
+    const thinking = messagesDiv.lastChild;
+    try {
+      const resp = await puter.ai.chat(query, { model: 'claude-opus-4-5' });
+      thinking.remove();
+      addMessage(resp, false, true);
+    } catch (e) {
+      thinking.remove();
+      addMessage('Error: ' + e.message, false);
+    }
+    return;
+  }
+
+  // Not signed in → open popup exactly once
+  if (!isWaitingForAuth) {
+    isWaitingForAuth = true;
     addMessage('Opening Puter sign-in popup…', false);
-    retryAfterAuth = true;
     vscode.commands.executeCommand('puter.openAuthPopup');
   }
 }
 
-async function doAiCall(query) {
-  addMessage('Thinking…', false);
-  const thinking = messagesDiv.lastChild;
-
-  try {
-    const resp = await puter.ai.chat(query, { model: 'claude-opus-4-5' });
-    thinking.remove();
-    addMessage(resp, false, true);
-  } catch (e) {
-    thinking.remove();
-    addMessage('Error: ' + e.message, false);
-  }
-}
-
-// Listen for the popup closing → retry the pending query
+// Listen for popup closed → retry the last query automatically
 window.addEventListener('message', (event) => {
-  if (event.data?.command === 'authPopupClosed' && retryAfterAuth && pendingQuery) {
-    retryAfterAuth = false;
-    // Small delay so cookies are fully set
-    setTimeout(() => doAiCall(pendingQuery), 800);
-    pendingQuery = null;
+  if (event.data?.command === 'authPopupClosed' && isWaitingForAuth) {
+    isWaitingForAuth = false;
+    addMessage('Signed in! Retrying your request…', false);
+    // small delay so cookies are fully set
+    setTimeout(() => {
+      const lastUserMsg = [...messagesDiv.querySelectorAll('.user')].pop()?.innerText || 'hi';
+      sendMessage();   // retry with last message
+    }, 1000);
   }
 });
 
-// Hook up UI
-sendButton.onclick = trySend;
-input.addEventListener('keypress', e => { if (e.key === 'Enter') trySend(); });
+sendButton.onclick = sendMessage;
+input.addEventListener('keypress', e => { if (e.key === 'Enter') sendMessage(); });
