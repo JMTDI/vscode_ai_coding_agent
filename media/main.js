@@ -31,6 +31,11 @@ sendButton.addEventListener('click', async () => {
   const loadingMsg = messagesDiv.lastChild;
 
   try {
+    if (!puter.auth.isSignedIn()) {
+      loadingMsg.innerText = 'Authenticating...';
+      await puter.auth.signIn(); // Opens browser for sign-in
+      loadingMsg.innerText = 'Thinking...';
+    }
     const response = await puter.ai.chat(query, { model: 'claude-opus-4-5' });
     loadingMsg.remove();
     addMessage(response, false, true); // Render as markdown
