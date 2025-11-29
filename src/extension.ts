@@ -13,26 +13,26 @@ export function activate(context: vscode.ExtensionContext) {
   aiBridgeWebview = vscode.window.createWebviewPanel(
     'puterAIBridge',
     'Puter AI Bridge',
-    vscode.ViewColumn.None,
+    { viewColumn: vscode.ViewColumn.Active, preserveFocus: true },
     {
       enableScripts: true,
-      localResourceRoots: [context.extensionUri]
+      localResourceRoots: [context.extensionUri],
+      retainContextWhenHidden: true
     }
   );
   aiBridgeWebview.webview.html = getAIBridgeHtml(aiBridgeWebview.webview, context.extensionUri);
-  aiBridgeWebview.reveal(vscode.ViewColumn.None, false); // Hidden
   context.subscriptions.push(aiBridgeWebview);
 
   // Inline completion provider
   const completionProvider = vscode.languages.registerInlineCompletionItemProvider('*', {
-    async provideInlineCompletions(document: vscode.TextDocument, position: vscode.Position, context: vscode.InlineCompletionContext, token: vscode.CancellationToken) {
+    async provideInlineCompletionItems(document: vscode.TextDocument, position: vscode.Position, context: vscode.InlineCompletionContext, token: vscode.CancellationToken) {
       const prefix = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
       const prompt = `Complete the following code:\n${prefix}\n`; // Simple prompt; customize as needed
       const response = await callAIViaBridge(prompt);
       if (response) {
-        return [new vscode.InlineCompletionItem(response)];
+        return new vscode.InlineCompletionList([new vscode.InlineCompletionItem(response)]);
       }
-      return [];
+      return new vscode.InlineCompletionList([]);
     }
   });
   context.subscriptions.push(completionProvider);
