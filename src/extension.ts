@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 
 let aiBridgeWebview: vscode.WebviewPanel | undefined;
+let authPopupWebview: vscode.WebviewPanel | undefined;   // <-- for real popup
 
 export function activate(context: vscode.ExtensionContext) {
-  // === Register the Chat Sidebar View ===
+  // === Chat sidebar ===
   const chatProvider = new ChatViewProvider(context.extensionUri);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('puterCodingAgent.chatView', chatProvider)
@@ -11,45 +12,62 @@ export function activate(context: vscode.ExtensionContext) {
 
   // === Command: Open real browser popup for Puter auth ===
   const openAuthPopup = vscode.commands.registerCommand('puter.openAuthPopup', async () => {
-    const authUrl = 'https://puter.com/?embedded_in_popup=true&request_auth=true';
-
-    // Open a real browser popup (not a VS Code panel)
-    const popup = window.open(
-      authUrl,
-      'puterAuthPopup',
-      'width=500,height=700,menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes'
-    );
-
-    if (!popup) {
-      vscode.window.showErrorMessage('Popup blocked. Allow popups or manually visit: ' + authUrl);
-      return;
+    // Clean up any old popup
+    if (authPopupWebview) {
+      authPopupWebview.dispose();
     }
 
-    // Poll every 500ms to detect when Puter closes the popup (it does this after login)
+    const authUrl = 'https://puter.com/?embedded_in_popup=true&request_auth=true';
+
+    // Create a hidden webview that opens as a real popup window
+    authPopupWebview = vscode.window.createWebviewPanel(
+      'puterAuth',
+      'Puter Sign-In',
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: true },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true
+      }
+    );
+
+    // This makes it behave like a real popup (size, no tabs, auto-close support)
+    authPopupWebview.webview.html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <script src="https://js.puter.com/v2/"></script>
+        <script>
+          // Puter closes the window automatically after login
+          window.location = "${authUrl}";
+        </script>
+      </head>
+      <body style="margin:0">
+        <div style="padding:20px;font-family:system-ui;text-align:center;">
+          Redirecting to Puter sign-in...
+        </div>
+      </body>
+      </html>`;
+
+    // Detect when Puter closes the window (it does this after successful login)
     const checkClosed = setInterval(() => {
-      if (popup.closed) {
+      if (authPopupWebview && !authPopupWebview.visible) {
         clearInterval(checkClosed);
-        // Notify both webviews that auth is done
+        authPopupWebview?.dispose();
+        authPopupWebview = undefined;
+        // Notify chat & bridge that auth is done
         vscode.commands.executeCommand('puter.authPopupClosed');
       }
     }, 500);
-
-    // Optional: auto-close check after 5 minutes if something goes wrong
-    setTimeout(() => {
-      if (!popup.closed) {
-        clearInterval(checkClosed);
-      }
-    }, 5 * 60 * 1000);
   });
   context.subscriptions.push(openAuthPopup);
 
-  // === Dummy command just to notify webviews that popup closed ===
+  // Dummy command — webviews listen for this
   const authClosedCmd = vscode.commands.registerCommand('puter.authPopupClosed', () => {
-    // The actual work is done in main.js and bridge.js
+    // nothing here — main.js and bridge.js do the retry
   });
   context.subscriptions.push(authClosedCmd);
 
-  // === Create hidden AI bridge webview (for inline completions & auth checks) ===
+  // === Hidden AI bridge webview ===
   aiBridgeWebview = vscode.window.createWebviewPanel(
     'puterAIBridge',
     'Puter AI Bridge',
@@ -63,19 +81,18 @@ export function activate(context: vscode.ExtensionContext) {
   aiBridgeWebview.webview.html = getAIBridgeHtml(aiBridgeWebview.webview, context.extensionUri);
   context.subscriptions.push(aiBridgeWebview);
 
-  // Forward popup request from bridge to main extension
-  aiBridgeWebview.webview.onDidReceiveMessage((msg) => {
+  // Forward popup request from bridge
+  aiBridgeWebview.webview.onDidReceiveMessage(msg => {
     if (msg.command === 'triggerAuthPopup') {
       vscode.commands.executeCommand('puter.openAuthPopup');
     }
   });
 
-  // === Inline Completion Provider (like Copilot) ===
+  // === Inline completions (Copilot-style) ===
   const completionProvider = vscode.languages.registerInlineCompletionItemProvider('*', {
-    async provideInlineCompletionItems(document, position, context, token) {
+    async provideInlineCompletionItems(document, position) {
       const isSignedIn = await checkSignedInStatus();
       if (!isSignedIn) {
-        // Trigger auth only once
         vscode.commands.executeCommand('puter.openAuthPopup');
         return new vscode.InlineCompletionList([]);
       }
@@ -85,13 +102,11 @@ export function activate(context: vscode.ExtensionContext) {
 
       try {
         const response = await callAIViaBridge(prompt);
-        if (response && response.trim()) {
-          return new vscode.InlineCompletionList([
-            new vscode.InlineCompletionItem(response)
-          ]);
+        if (response?.trim()) {
+          return new vscode.InlineCompletionList([new vscode.InlineCompletionItem(response)]);
         }
-      } catch (err: any) {
-        console.error('Inline completion error:', err);
+      } catch (e: any) {
+        console.error('Completion error:', e);
       }
       return new vscode.InlineCompletionList([]);
     }
@@ -99,15 +114,12 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(completionProvider);
 }
 
-// === Check if user is already signed in ===
+// === Auth status check ===
 async function checkSignedInStatus(): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (!aiBridgeWebview) {
-      resolve(false);
-      return;
-    }
-    const id = Math.random().toString(36).substring(7);
-    const listener = aiBridgeWebview.webview.onDidReceiveMessage((msg) => {
+  return new Promise(resolve => {
+    if (!aiBridgeWebview) return resolve(false);
+    const id = Math.random().toString(36);
+    const listener = aiBridgeWebview.webview.onDidReceiveMessage(msg => {
       if (msg.id === id) {
         listener.dispose();
         resolve(!!msg.signedIn);
@@ -117,20 +129,16 @@ async function checkSignedInStatus(): Promise<boolean> {
   });
 }
 
-// === Call AI via hidden bridge webview ===
+// === Call AI ===
 function callAIViaBridge(query: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    if (!aiBridgeWebview) {
-      reject('AI bridge not ready');
-      return;
-    }
+    if (!aiBridgeWebview) return reject('Bridge not ready');
 
-    const id = Math.random().toString(36).substring(7);
-    const listener = aiBridgeWebview.webview.onDidReceiveMessage((msg) => {
+    const id = Math.random().toString(36);
+    const listener = aiBridgeWebview.webview.onDidReceiveMessage(msg => {
       if (msg.id === id) {
         listener.dispose();
-        if (msg.response) resolve(msg.response);
-        else reject(msg.error || 'Unknown error');
+        msg.response ? resolve(msg.response) : reject(msg.error || 'Unknown error');
       }
     });
 
@@ -143,7 +151,7 @@ function callAIViaBridge(query: string): Promise<string> {
   });
 }
 
-// === HTML for the hidden AI bridge webview ===
+// === Bridge HTML ===
 function getAIBridgeHtml(webview: vscode.Webview, extensionUri: vscode.Uri) {
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'bridge.js'));
   return `<!DOCTYPE html>
@@ -158,45 +166,38 @@ function getAIBridgeHtml(webview: vscode.Webview, extensionUri: vscode.Uri) {
     </html>`;
 }
 
-// === Chat Sidebar Webview ===
+// === Chat view provider ===
 class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
   public resolveWebviewView(
     webviewView: vscode.WebviewView,
-    context: vscode.WebviewViewResolveContext,
+    _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
   ) {
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [this._extensionUri]
-    };
+    webviewView.webview.options = { enableScripts: true, localResourceRoots: [this._extensionUri] };
+    webviewView.webview.html = this._getHtml(webviewView.webview);
 
-    webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
-
-    // Handle insert code
-    webviewView.webview.onDidReceiveMessage(async (message) => {
-      if (message.command === 'insertCode') {
+    webviewView.webview.onDidReceiveMessage(msg => {
+      if (msg.command === 'insertCode') {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
-          editor.edit(editBuilder => {
-            editBuilder.insert(editor.selection.active, message.code);
-          });
+          editor.edit(edit => edit.insert(editor.selection.active, msg.code));
         }
       }
     });
   }
 
-  private _getHtmlForWebview(webview: vscode.Webview) {
-    const scriptUri = webview.asWebviewUri(vscode.Uri. joinPath(this._extensionUri, 'media', 'main.js'));
+  private _getHtml(webview: vscode.Webview) {
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'main.js'));
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'styles.css'));
     const markedUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', 'marked', 'marked.min.js'));
 
     return `<!DOCTYPE html>
-    <html lang="en">
+    <html>
     <head>
       <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
       <title>Puter Coding Agent</title>
       <link href="${styleUri}" rel="stylesheet">
       <script src="https://js.puter.com/v2/"></script>
@@ -206,7 +207,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       <div id="chat-container">
         <div id="messages"></div>
         <div class="input-area">
-          <input type="text" id="input" placeholder="Ask for code, fixes, explanations..." />
+          <input type="text" id="input" placeholder="Ask anything..." />
           <button id="send">Send</button>
         </div>
       </div>
@@ -217,7 +218,6 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 }
 
 export function deactivate() {
-  if (aiBridgeWebview) {
-    aiBridgeWebview.dispose();
-  }
+  aiBridgeWebview?.dispose();
+  authPopupWebview?.dispose();
 }
