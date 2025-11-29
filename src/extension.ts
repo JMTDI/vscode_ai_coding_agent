@@ -12,52 +12,41 @@ export function activate(context: vscode.ExtensionContext) {
 
   // === Command: Open real browser popup for Puter auth ===
   const openAuthPopup = vscode.commands.registerCommand('puter.openAuthPopup', async () => {
-    // Clean up any old popup
-    if (authPopupWebview) {
-      authPopupWebview.dispose();
-    }
+    if (authPopupWebview) authPopupWebview.dispose();
 
     const authUrl = 'https://puter.com/?embedded_in_popup=true&request_auth=true';
 
-    // Create a hidden webview that opens as a real popup window
     authPopupWebview = vscode.window.createWebviewPanel(
       'puterAuth',
       'Puter Sign-In',
       { viewColumn: vscode.ViewColumn.Active, preserveFocus: true },
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true
-      }
+      { enableScripts: true, retainContextWhenHidden: true }
     );
 
-    // This makes it behave like a real popup (size, no tabs, auto-close support)
     authPopupWebview.webview.html = `
       <!DOCTYPE html>
-      <html>
-      <head>
+      <html><body style="margin:0">
         <script src="https://js.puter.com/v2/"></script>
         <script>
           // Puter closes the window automatically after login
           window.location = "${authUrl}";
+          // Also close after 90 seconds if something goes wrong
+          setTimeout(() => window.close(), 90000);
         </script>
-      </head>
-      <body style="margin:0">
-        <div style="padding:20px;font-family:system-ui;text-align:center;">
-          Redirecting to Puter sign-in...
+        <div style="padding:30px;font-family:system-ui;text-align:center;">
+          Redirecting to Puter sign-in…
         </div>
-      </body>
-      </html>`;
+      </body></html>`;
 
-    // Detect when Puter closes the window (it does this after successful login)
-    const checkClosed = setInterval(() => {
-      if (authPopupWebview && !authPopupWebview.visible) {
-        clearInterval(checkClosed);
-        authPopupWebview?.dispose();
+    // Detect when the popup disappears (Puter closes it after login)
+    const poll = setInterval(() => {
+      if (authPopupWebview && !authPopupWebview.active && !authPopupWebview.visible) {
+        clearInterval(poll);
+        authPopupWebview.dispose();
         authPopupWebview = undefined;
-        // Notify chat & bridge that auth is done
         vscode.commands.executeCommand('puter.authPopupClosed');
       }
-    }, 500);
+    }, 600);
   });
   context.subscriptions.push(openAuthPopup);
 
