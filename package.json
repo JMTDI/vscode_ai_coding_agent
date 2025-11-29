@@ -2,7 +2,7 @@
   "name": "puter-coding-agent",
   "displayName": "Puter Coding Agent",
   "description": "A coding assistant in VS Code using Puter's free AI APIs (Claude Opus 4.5 via Puter.js).",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -11,7 +11,8 @@
     "Machine Learning"
   ],
   "activationEvents": [
-    "onView:puterCodingAgent.chatView"
+    "onView:puterCodingAgent.chatView",
+    "onLanguage:*"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -28,7 +29,8 @@
       "puter-coding-agent": [
         {
           "id": "puterCodingAgent.chatView",
-          "name": "Coding Chat"
+          "name": "Coding Chat",
+          "type": "webview"
         }
       ]
     }
